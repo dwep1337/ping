@@ -1,0 +1,7 @@
+services:
+  ping:
+    build: .
+    container_name: ping
+    restart: unless-stopped
+    env_file:
+      - .env

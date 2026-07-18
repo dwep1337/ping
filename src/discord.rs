@@ -1,7 +1,12 @@
 use serde_json::{json, Value};
+use std::time::Duration;
 
 const COLOR_DOWN: u32 = 0xe7_4c_3c;
 const COLOR_UP: u32 = 0x2e_cc_71;
+
+/// Attempts including the first try
+const WEBHOOK_ATTEMPTS: u32 = 3;
+const WEBHOOK_RETRY_DELAY: Duration = Duration::from_secs(2);
 
 pub enum Alert<'a> {
     Down { reason: &'a str },
@@ -62,9 +67,36 @@ pub async fn notify(
 
 async fn post_webhook(webhook: &str, body: Value) -> Result<(), String> {
     let client = reqwest::Client::new();
+    let mut last_error = String::from("Discord webhook failed");
+
+    for attempt in 1..=WEBHOOK_ATTEMPTS {
+        match send_once(&client, webhook, &body).await {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                last_error = error;
+                eprintln!(
+                    "Discord webhook attempt {attempt}/{WEBHOOK_ATTEMPTS} failed: {last_error}"
+                );
+                if attempt < WEBHOOK_ATTEMPTS {
+                    tokio::time::sleep(WEBHOOK_RETRY_DELAY).await;
+                }
+            }
+        }
+    }
+
+    Err(format!(
+        "Discord webhook failed after {WEBHOOK_ATTEMPTS} attempts: {last_error}"
+    ))
+}
+
+async fn send_once(
+    client: &reqwest::Client,
+    webhook: &str,
+    body: &Value,
+) -> Result<(), String> {
     let response = client
         .post(webhook)
-        .json(&body)
+        .json(body)
         .send()
         .await
         .map_err(|e| e.to_string())?;
@@ -72,9 +104,7 @@ async fn post_webhook(webhook: &str, body: Value) -> Result<(), String> {
     if !response.status().is_success() {
         let status = response.status();
         let text = response.text().await.unwrap_or_default();
-        return Err(format!("Discord webhook failed: HTTP {status} {text}")
-            .trim()
-            .to_string());
+        return Err(format!("HTTP {status} {text}").trim().to_string());
     }
 
     Ok(())
